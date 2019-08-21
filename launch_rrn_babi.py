@@ -6,12 +6,19 @@ import torch
 import torch.nn as nn
 import argparse
 import os
+import time
 from itertools import chain
 from src.utils import files_names_test_en, files_names_train_en, files_names_test_en_valid, files_names_train_en_valid, \
     files_names_val_en_valid
 from src.utils import saving_path_rrn, names_models, load_models, split_train_validation
 from src.utils import load_dict, save_dict
 from task.babi_task.rrn.train import train_single, test
+
+# Ignore warnings
+import warnings
+warnings.filterwarnings("ignore")
+
+device_count = max(torch.cuda.device_count(), 1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=1, help='epochs to train.')
@@ -20,13 +27,15 @@ parser.add_argument('--lstm_layers', type=int, default=1, help='layers of prepro
 parser.add_argument('--hidden_dim_lstm', type=int, default=32, help='hidden dimension of preprocessing LSTM')
 parser.add_argument('--hidden_dims_mlp', nargs='+', type=int, default=[128, 128, 128],
                     help='hidden layers dimension of preprocessing MLP')
-parser.add_argument('--hidden_dim_rrn', type=int, default=32, help='hidden dimension of RRN hidden state')
-parser.add_argument('--message_dim_rrn', type=int, default=32, help='hidden dimension of RRN messages')
+# parser.add_argument('--hidden_dim_rrn', type=int, default=32, help='hidden dimension of RRN hidden state')
+parser.add_argument('--hidden_dim_rrn', type=int, default=128, help='hidden dimension of RRN hidden state')
+# parser.add_argument('--message_dim_rrn', type=int, default=32, help='hidden dimension of RRN messages')
+parser.add_argument('--message_dim_rrn', type=int, default=128, help='hidden dimension of RRN messages')
 parser.add_argument('--f_dims', nargs='+', type=int, default=[128, 128, 128],
                     help='hidden layers dimension of message MLP inside RRN')
 parser.add_argument('--o_dims', nargs='+', type=int, default=[128, 128, 128],
                     help='hidden layers dimension of output MLP inside RRN')
-parser.add_argument('--batch_size_stories', type=int, default=10, help='batch size for stories')
+parser.add_argument('--batch_size_stories', type=int, default=10 * device_count, help='batch size for stories')
 
 parser.add_argument('--emb_dim', type=int, default=32, help='word embedding dimension')
 parser.add_argument('--only_relevant', action="store_true", help='read only relevant fact from babi dataset')
@@ -40,24 +49,11 @@ parser.add_argument('--en_valid', action="store_true", help='Use en-valid-10k in
 parser.add_argument('--weight_decay', type=float, default=1e-5, help='optimizer hyperparameter')
 parser.add_argument('--learning_rate', type=float, default=2e-4, help='optimizer hyperparameter')
 
-parser.add_argument('--cuda', action="store_true", help='use gpu')
+# parser.add_argument('--cuda', action="store_true", help='use gpu')
 parser.add_argument('--load', action="store_true", help=' load saved model')
 parser.add_argument('--no_save', action="store_true", help='disable model saving')
 parser.add_argument('--print_every', type=int, default=500, help='print information every print_every steps')
 args = parser.parse_args()
-
-# mode = 'cpu'
-# if args.cuda:
-#     if torch.cuda.is_available():
-#         print('Using ', torch.cuda.device_count() ,' GPU(s)')
-#         mode = 'cuda'
-#     else:
-#         print("WARNING: No GPU found. Using CPUs...")
-# else:
-#     print('Using 0 GPUs')
-
-# device = torch.device(mode)
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 cd = os.path.dirname(os.path.abspath(__file__))
 
@@ -75,6 +71,8 @@ else:
     to_read_train = [files_names_train_en[i - 1] for i in args.babi_tasks]
 
 print("Reading babi")
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if not args.en_valid:  # When reading from en-10k and not from en-valid-10k
     stories, dictionary, labels = read_babi(path_babi_base, to_read_train, args.babi_tasks,
@@ -112,6 +110,8 @@ rrn = RRN(args.hidden_dim_rrn, args.message_dim_rrn, dict_size, args.f_dims, arg
 if torch.cuda.device_count() > 1:
     print("Using {} GPUs!".format(torch.cuda.device_count()))
     rrn = nn.DataParallel(rrn)
+elif torch.cuda.is_available():
+    print("Using 1 GPU!")
 else:
     print("No GPUs found, using CPU!")
 
@@ -125,12 +125,14 @@ criterion = torch.nn.CrossEntropyLoss(reduction='mean')
 
 if args.epochs > 0:
     print("Start training")
+    begin_time = time.time()
     avg_train_losses, avg_train_accuracies, val_losses, val_accuracies = train_single(train_stories, validation_stories,
                                                                                       args.epochs, mlp, lstm, rrn,
                                                                                       criterion, optimizer,
                                                                                       args.print_every, args.no_save,
                                                                                       device)
-    print("End training!")
+    end_time = time.time()
+    print("End training! total training time: {} seconds".format(end_time - begin_time))
 
 print("Testing...")
 avg_test_loss, avg_test_accuracy = test(test_stories, mlp, lstm, rrn, criterion, device)
@@ -141,8 +143,7 @@ print("Test loss: ", avg_test_loss)
 if args.epochs > 0:
     import matplotlib
 
-    if args.cuda:
-        matplotlib.use('Agg')
+    matplotlib.use('Agg')
 
     import matplotlib.pyplot as plt
 
@@ -151,17 +152,10 @@ if args.epochs > 0:
     plt.plot(range(len(val_losses)), val_losses, 'r', label='val')
     plt.legend(loc='best')
 
-    if args.cuda:
-        plt.savefig('plots/loss.png')
-    else:
-        plt.show()
-
+    plt.savefig('plots/loss.png')
     plt.figure()
     plt.plot(range(len(avg_train_accuracies)), avg_train_accuracies, 'b', label='train')
     plt.plot(range(len(val_accuracies)), val_accuracies, 'r', label='val')
     plt.legend(loc='best')
 
-    if args.cuda:
-        plt.savefig('plots/accuracy.png')
-    else:
-        plt.show()
+    plt.savefig('plots/accuracy.png')

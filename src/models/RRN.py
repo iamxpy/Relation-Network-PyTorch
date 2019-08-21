@@ -3,9 +3,11 @@ import torch.nn as nn
 from torch.nn import LSTM
 from src.models.MLP import MLP
 
+
 class RRN(nn.Module):
 
-    def __init__(self, dim_hidden, message_dim, output_dim, f_dims, o_dims, device,  g_layers=1, edge_attribute_dim=0, single_output=False):
+    def __init__(self, dim_hidden, message_dim, output_dim, f_dims, o_dims, device, g_layers=1, edge_attribute_dim=0,
+                 single_output=False):
         '''
         :param n_units: number of nodes in the graph
         :param edge_attribute_dim: 0 if edges have no attributes, else an integer. Default 0.
@@ -53,27 +55,31 @@ class RRN(nn.Module):
 
         hi = hidden.repeat(1, n_facts, 1)
         hj = hidden.unsqueeze(2)
-        hj = hj.repeat(1,1,n_facts,1).view(hidden.size(0),-1,hidden.size(2))
+        hj = hj.repeat(1, 1, n_facts, 1).view(hidden.size(0), -1, hidden.size(2))
         if edge_attribute is not None:
             ea = edge_attribute.unsqueeze(1)
-            ea = ea.repeat(1,hi.size(1),1)
-            input_f = torch.cat((hj,hi,ea), dim=2)
+            ea = ea.repeat(1, hi.size(1), 1)
+            input_f = torch.cat((hj, hi, ea), dim=2)
         else:
-            input_f = torch.cat((hi,hj), dim=2)
-
+            input_f = torch.cat((hi, hj), dim=2)
 
         messages = self.f(input_f)
 
-        messages = messages.view(hidden.size(0),hidden.size(1),hidden.size(1), self.message_dim)
+        messages = messages.view(hidden.size(0), hidden.size(1), hidden.size(1), self.message_dim)
 
         # sum_messages[i] contains the sum of the messages incoming to node i
-        sum_messages = torch.sum(messages, dim=2) # B, N_facts, Message_dim
+        sum_messages = torch.sum(messages, dim=2)  # B, N_facts, Message_dim
 
         input_g_mlp = torch.cat((x, sum_messages), dim=2)
 
         input_g = self.g_mlp(input_g_mlp)
 
-        out, h = self.g(input_g, h)
+        hidden0 = tuple([x.permute(1, 0, 2).contiguous() for x in h])
+
+        # out, h = self.g(input_g, h)
+        out, hidden0 = self.g(input_g, hidden0)
+
+        h = tuple([x.permute(1, 0, 2).contiguous() for x in hidden0])
 
         hidden = out.clone()
 
@@ -87,9 +93,9 @@ class RRN(nn.Module):
 
     def reset_g(self, b):
         # hidden is composed by hidden and cell state vectors
-        self.batch_size = b
+        # self.batch_size = b
         h = (
-            torch.zeros(self.g_layers, b, self.dim_hidden, device=self.device, requires_grad=True),
-            torch.zeros(self.g_layers, b, self.dim_hidden, device=self.device, requires_grad=True)
-            )
+            torch.zeros(b, self.g_layers, self.dim_hidden, device=self.device, requires_grad=True),
+            torch.zeros(b, self.g_layers, self.dim_hidden, device=self.device, requires_grad=True)
+        )
         return h
